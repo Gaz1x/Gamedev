@@ -27,6 +27,12 @@ const BRANCH_CHANCE_STEP = 0.04;
 const BRANCH_CHANCE_MAX = 0.55;
 /** Неуязвимость после удара, мс. */
 const HIT_COOLDOWN_MS = 1000;
+/** Через сколько мс бездействия появляется шкала «РУБИ!». */
+const IDLE_WARN_MS = 3500;
+/** Через сколько мс бездействия сгорает жизнь. */
+const IDLE_LIMIT_MS = 9000;
+/** Ширина шкалы бездействия в пикселях. */
+const IDLE_BAR_WIDTH = 320;
 
 const FONT = 'system-ui, sans-serif';
 const COLOR_TEXT = '#f8fafc';
@@ -67,6 +73,7 @@ export class GameScene extends Phaser.Scene {
   private elapsed = 0;
   private playing = true;
   private invulnerableUntil = 0;
+  private lastActionTime = 0;
 
   private livesText!: Phaser.GameObjects.Text;
   private timeText!: Phaser.GameObjects.Text;
@@ -76,6 +83,9 @@ export class GameScene extends Phaser.Scene {
   private overlay!: Phaser.GameObjects.Container;
   private overlayTitle!: Phaser.GameObjects.Text;
   private overlayStats!: Phaser.GameObjects.Text;
+  private idleBox!: Phaser.GameObjects.Container;
+  private idleFill!: Phaser.GameObjects.Rectangle;
+  private idleLabel!: Phaser.GameObjects.Text;
 
   constructor() {
     super('GameScene');
@@ -88,6 +98,7 @@ export class GameScene extends Phaser.Scene {
     this.elapsed = 0;
     this.playing = true;
     this.invulnerableUntil = 0;
+    this.lastActionTime = this.time.now;
     this.playerSide = 'left';
     this.segments = [];
     this.segmentObjs = [];
@@ -109,6 +120,7 @@ export class GameScene extends Phaser.Scene {
     this.buildPlayer();
     this.buildHud();
     this.buildOverlay();
+    this.buildIdleBar();
     this.bindInput();
   }
 
@@ -116,6 +128,7 @@ export class GameScene extends Phaser.Scene {
     if (this.playing) {
       this.elapsed += delta / 1000;
       this.timeText.setText(`⏱ ${this.elapsed.toFixed(1)}с`);
+      this.tickIdle();
     }
     // Мигание при неуязвимости.
     if (this.playing && this.time.now < this.invulnerableUntil) {
@@ -242,6 +255,7 @@ export class GameScene extends Phaser.Scene {
       const seg = this.segments[i];
       const y = BASE_Y - i * SEGMENT_HEIGHT - SEGMENT_HEIGHT / 2;
       const c = this.add.container(TREE_X, y);
+      c.setDepth(1);
       c.add(this.add.image(0, 0, 'trunk'));
 
       if (seg.branch === 'left' || seg.branch === 'right') {
@@ -292,6 +306,7 @@ export class GameScene extends Phaser.Scene {
   private buildPlayer(): void {
     const x = TREE_X - PLAYER_OFFSET_X;
     this.player = this.add.container(x, BASE_Y);
+    this.player.setDepth(2);
     // Ноги.
     this.player.add(this.add.rectangle(-10, 52, 16, 26, 0x1f2937));
     this.player.add(this.add.rectangle(10, 52, 16, 26, 0x1f2937));
@@ -317,7 +332,7 @@ export class GameScene extends Phaser.Scene {
   // ---------- HUD ----------
 
   private buildHud(): void {
-    this.add.rectangle(480, 34, 960, 68, 0x111827, 0.85);
+    this.add.rectangle(480, 34, 960, 68, 0x111827, 0.85).setDepth(19);
     this.livesText = this.add.text(20, 16, '', {
       fontFamily: FONT,
       fontSize: '26px',
@@ -348,6 +363,11 @@ export class GameScene extends Phaser.Scene {
       { fontFamily: FONT, fontSize: '16px', color: COLOR_TEXT, backgroundColor: '#111827aa', padding: { x: 10, y: 6 } },
     );
     this.hintText.setOrigin(0.5, 0.5);
+    this.livesText.setDepth(20);
+    this.timeText.setDepth(20);
+    this.rescuedText.setDepth(20);
+    this.progressText.setDepth(20);
+    this.hintText.setDepth(20);
     this.updateHud();
   }
 
@@ -360,8 +380,65 @@ export class GameScene extends Phaser.Scene {
     this.progressText.setText(`рубок: ${this.chops}   •   лесник на ветке через рубок: ${dist}`);
   }
 
+  // ---------- Шкала бездействия ----------
+
+  /** Полоса «РУБИ!» под HUD: появляется при простое, пустеет к штрафу. */
+  private buildIdleBar(): void {
+    this.idleBox = this.add.container(480, 96).setDepth(20).setVisible(false);
+    const bg = this.add.rectangle(0, 0, IDLE_BAR_WIDTH + 12, 40, 0x111827, 0.9);
+    const frame = this.add.rectangle(0, 8, IDLE_BAR_WIDTH, 12, 0x334155);
+    this.idleFill = this.add.rectangle(-IDLE_BAR_WIDTH / 2, 8, IDLE_BAR_WIDTH, 12, 0x4ade80);
+    this.idleFill.setOrigin(0, 0.5);
+    this.idleLabel = this.add.text(0, -8, '⏳ РУБИ! А ТО ЗАСНЁШЬ!', {
+      fontFamily: FONT,
+      fontSize: '16px',
+      color: '#fef08a',
+    });
+    this.idleLabel.setOrigin(0.5, 0.5);
+    this.idleBox.add([bg, frame, this.idleFill, this.idleLabel]);
+  }
+
+  private hideIdleBar(): void {
+    this.idleBox.setVisible(false);
+  }
+
+  /** Проверяет простой: показывает шкалу, при истечении — минус жизнь. */
+  private tickIdle(): void {
+    const idleFor = this.time.now - this.lastActionTime;
+    if (idleFor < IDLE_WARN_MS) {
+      this.hideIdleBar();
+      return;
+    }
+    const left = Phaser.Math.Clamp(
+      1 - (idleFor - IDLE_WARN_MS) / (IDLE_LIMIT_MS - IDLE_WARN_MS),
+      0,
+      1,
+    );
+    this.idleBox.setVisible(true);
+    this.idleFill.setScale(Math.max(left, 0.001), 1);
+    this.idleFill.setFillStyle(left > 0.5 ? 0x4ade80 : left > 0.25 ? 0xfbbf24 : 0xf87171);
+    this.idleLabel.setAlpha(0.6 + 0.4 * Math.sin(this.time.now / 150));
+    if (left <= 0) {
+      this.applyIdlePenalty();
+    }
+  }
+
+  /** Штраф за сон: −1 жизнь и отсчёт простоя заново. */
+  private applyIdlePenalty(): void {
+    this.lives -= 1;
+    this.lastActionTime = this.time.now;
+    this.hideIdleBar();
+    this.cameras.main.shake(180, 0.012);
+    this.cameras.main.flash(120, 220, 60, 60);
+    this.floatText(TREE_X, BASE_Y - 140, 'Не спи! −1 ❤', COLOR_BAD);
+    this.updateHud();
+    if (this.lives <= 0) {
+      this.endGame(false);
+    }
+  }
+
   private buildOverlay(): void {
-    this.overlay = this.add.container(480, 300).setVisible(false).setDepth(10);
+    this.overlay = this.add.container(480, 300).setVisible(false).setDepth(30);
     const bg = this.add.rectangle(0, 0, 640, 300, 0x111827, 0.95);
     bg.setStrokeStyle(3, 0x334155);
     this.overlayTitle = this.add.text(0, -100, '', {
@@ -416,6 +493,8 @@ export class GameScene extends Phaser.Scene {
     this.playerSide = side;
     this.movePlayer();
     this.swingAxe();
+    this.lastActionTime = this.time.now;
+    this.hideIdleBar();
 
     const bottom = this.segments[0];
     const now = this.time.now;
