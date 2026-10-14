@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { branchChanceForPhase, PHASE_SECONDS } from './phases';
 
 /** Ширина ствола в пикселях. */
 const TRUNK_WIDTH = 84;
@@ -21,16 +22,10 @@ const FORESTERS_TO_WIN = 30;
 const FORESTER_MIN_GAP = 5;
 /** Максимум рубок до ветки с лесником. */
 const FORESTER_MAX_GAP = 12;
-/** Стартовый шанс ветки на новом сегменте (классика, фаза 1). */
-const BRANCH_CHANCE_START = 0.2;
 /** Рост шанса ветки за каждого спасённого. */
 const BRANCH_CHANCE_STEP = 0.04;
-/** Дополнительный шанс ветки за каждую новую фазу сложности. */
-const PHASE_BRANCH_CHANCE_STEP = 0.18;
-/** Максимальный шанс ветки. */
+/** Потолок шанса ветки с учётом бонуса за спасённых. */
 const BRANCH_CHANCE_MAX = 0.9;
-/** Сколько секунд идёт одна фаза сложности (классика): веток становится больше. */
-const PHASE_SECONDS = 60;
 /** Сколько мс надо зажать физическую клавишу R, чтобы перезапустить игру. */
 const RESTART_HOLD_MS = 900;
 /** Оглушение после удара веткой: рубить нельзя, мс. */
@@ -273,7 +268,7 @@ export class GameScene extends Phaser.Scene {
 
   /**
    * Классика становится жёстче со временем: каждые PHASE_SECONDS секунд —
-   * новая фаза, шанс ветки растёт на PHASE_BRANCH_CHANCE_STEP.
+   * новая фаза, шанс ветки берётся из таблицы PHASE_BRANCH_CHANCES (phases.ts).
    */
   private checkPhase(): void {
     const phase = Math.floor(this.elapsed / PHASE_SECONDS) + 1;
@@ -455,10 +450,9 @@ export class GameScene extends Phaser.Scene {
         key: this.randomLetter(),
       };
     }
+    // Шанс ветки берётся из таблицы фаз (phases.ts) плюс бонус за спасённых.
     const chance = Math.min(
-      BRANCH_CHANCE_START +
-        this.rescued * BRANCH_CHANCE_STEP +
-        (this.phase - 1) * PHASE_BRANCH_CHANCE_STEP,
+      branchChanceForPhase(this.phase) + this.rescued * BRANCH_CHANCE_STEP,
       BRANCH_CHANCE_MAX,
     );
     const roll = Math.random();
