@@ -31,18 +31,39 @@ const BRANCH_CHANCE_MAX = 0.55;
 const STUN_MS = 900;
 /** Латинские двойники букв пула: раскладка клавиатуры не важна (С ≡ C). */
 const LETTER_TWINS: Record<string, string> = {
-  A: 'А',
-  B: 'В',
+  Q: 'Й',
+  W: 'Ц',
+  E: 'У',
+  R: 'К',
+  T: 'Е',
+  Y: 'Н',
+  U: 'Г',
+  I: 'Ш',
+  O: 'Щ',
+  P: 'З',
+  '[': 'Х',
+  ']': 'Ъ',
+  A: 'Ф',
+  S: 'Ы',
+  D: 'В',
+  F: 'А',
+  G: 'П',
+  H: 'Р',
+  J: 'О',
+  K: 'Л',
+  L: 'Д',
+  ';': 'Ж',
+  "'": 'Э',
+  Z: 'Я',
+  X: 'Ч',
   C: 'С',
-  E: 'Е',
-  H: 'Н',
-  K: 'К',
-  M: 'М',
-  O: 'О',
-  P: 'Р',
-  T: 'Т',
-  X: 'Х',
-  Y: 'У',
+  V: 'М',
+  B: 'И',
+  N: 'Т',
+  M: 'Ь',
+  ',': 'Б',
+  '.': 'Ю',
+  '`': 'Ё',
 };
 /** Масштаб фигурки лесника на ветке. */
 const FORESTER_SCALE = 1.15;
@@ -59,8 +80,8 @@ const HINTS_X = 880;
 /** Y-центр кнопки подсказок. */
 const HINTS_Y = 226;
 /** Размер клик-зоны кнопки подсказок. */
-const HINTS_ZONE_WIDTH = 150;
-const HINTS_ZONE_HEIGHT = 64;
+const HINTS_ZONE_WIDTH = 120;
+const HINTS_ZONE_HEIGHT = 56;
 /** Ключ рекорда времени в localStorage. */
 const BEST_TIME_KEY = 'lumberjack-best-time';
 /** Через сколько мс бездействия появляется шкала «РУБИ!». */
@@ -69,14 +90,20 @@ const IDLE_WARN_MS = 3500;
 const IDLE_LIMIT_MS = 9000;
 /** Ширина шкалы бездействия в пикселях. */
 const IDLE_BAR_WIDTH = 320;
-/** Буквы для режима букв (кириллица — по одной на клавишу). */
-const LETTER_POOL = 'АВЕКМНОРСТУХ';
+/** Символы для режима букв: весь алфавит + цифры (любая клавиша в деле). */
+const LETTER_POOL = 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ0123456789';
 
 const FONT = 'system-ui, sans-serif';
 const COLOR_TEXT = '#f8fafc';
 const COLOR_MUTED = '#cbd5e1';
 const COLOR_GOOD = '#4ade80';
 const COLOR_BAD = '#f87171';
+/** Кремовый текст на деревянных панелях. */
+const COLOR_CREAM = '#fde9c8';
+/** Дерево панелей меню и светлая кромка. */
+const WOOD_FILL = 0x7c4a21;
+const WOOD_DARK = 0x3f2810;
+const WOOD_LIGHT = 0xa06a35;
 
 type Side = 'left' | 'right';
 type Branch = 'none' | Side;
@@ -431,13 +458,13 @@ export class GameScene extends Phaser.Scene {
       }
       // В режиме букв на нижнем бревне показана нужная буква.
       if (i === 0 && this.mode === 'letters') {
-        const badge = this.add.rectangle(0, 0, 52, 52, 0x111827, 0.92);
-        badge.setStrokeStyle(3, 0xfef08a);
+        const badge = this.add.rectangle(0, 0, 52, 52, WOOD_DARK, 0.95);
+        badge.setStrokeStyle(3, 0xfbbf24);
         c.add(badge);
         const letter = this.add.text(0, 0, seg.key, {
           fontFamily: FONT,
           fontSize: '34px',
-          color: '#fef08a',
+          color: COLOR_CREAM,
         });
         letter.setOrigin(0.5, 0.5);
         c.add(letter);
@@ -568,7 +595,9 @@ export class GameScene extends Phaser.Scene {
   // ---------- HUD ----------
 
   private buildHud(): void {
-    this.add.rectangle(480, 34, 960, 68, 0x111827, 0.85).setDepth(19);
+    // Верхняя балка — деревянная, с тёмной кромкой снизу.
+    this.add.rectangle(480, 34, 960, 68, WOOD_FILL, 0.96).setDepth(19);
+    this.add.rectangle(480, 66, 960, 5, WOOD_DARK, 0.96).setDepth(19);
     this.livesText = this.add.text(20, 16, '', {
       fontFamily: FONT,
       fontSize: '26px',
@@ -589,7 +618,7 @@ export class GameScene extends Phaser.Scene {
     this.progressText = this.add.text(480, 44, '', {
       fontFamily: FONT,
       fontSize: '16px',
-      color: COLOR_MUTED,
+      color: COLOR_CREAM,
     });
     this.progressText.setOrigin(0.5, 0);
     this.hintText = this.add.text(
@@ -623,8 +652,9 @@ export class GameScene extends Phaser.Scene {
   /** Полоса «РУБИ!» под HUD: появляется при простое, пустеет к штрафу. */
   private buildIdleBar(): void {
     this.idleBox = this.add.container(480, 96).setDepth(20).setVisible(false);
-    const bg = this.add.rectangle(0, 0, IDLE_BAR_WIDTH + 12, 40, 0x111827, 0.9);
-    const frame = this.add.rectangle(0, 8, IDLE_BAR_WIDTH, 12, 0x334155);
+    const bg = this.add.rectangle(0, 0, IDLE_BAR_WIDTH + 12, 40, WOOD_FILL, 0.95);
+    bg.setStrokeStyle(2, WOOD_DARK);
+    const frame = this.add.rectangle(0, 8, IDLE_BAR_WIDTH, 12, WOOD_DARK);
     this.idleFill = this.add.rectangle(-IDLE_BAR_WIDTH / 2, 8, IDLE_BAR_WIDTH, 12, 0x4ade80);
     this.idleFill.setOrigin(0, 0.5);
     this.idleLabel = this.add.text(0, -8, '⏳ РУБИ! А ТО ЗАСНЁШЬ!', {
@@ -679,14 +709,14 @@ export class GameScene extends Phaser.Scene {
 
   /** Кнопка ❓ под рубильником: показывает/прячет подсказку управления. */
   private buildHintsButton(): void {
-    this.hintsButtonBox = this.add.rectangle(0, 0, 132, 44, 0x111827, 0.92);
-    this.hintsButtonBox.setStrokeStyle(2, 0x64748b);
+    this.hintsButtonBox = this.add.rectangle(0, 0, 100, 38, WOOD_FILL, 0.96);
+    this.hintsButtonBox.setStrokeStyle(2, WOOD_DARK);
     this.hintsButtonBox.setInteractive({ useHandCursor: true });
     this.hintsButtonBox.on('pointerdown', () => this.toggleHints());
     this.hintsButtonLabel = this.add.text(0, 0, '', {
       fontFamily: FONT,
       fontSize: '15px',
-      color: COLOR_TEXT,
+      color: '#fde9c8',
     });
     this.hintsButtonLabel.setOrigin(0.5, 0.5);
     this.hintsButton = this.add.container(HINTS_X, HINTS_Y, [
@@ -706,8 +736,8 @@ export class GameScene extends Phaser.Scene {
 
   /** Подпись кнопки ❓ по состоянию подсказок. */
   private updateHintsButton(): void {
-    this.hintsButtonLabel.setText(this.hintsOn ? '❓ Подсказки: ВКЛ' : '❓ Подсказки: ВЫКЛ');
-    this.hintsButtonBox.setStrokeStyle(2, this.hintsOn ? 0x4ade80 : 0x64748b);
+    this.hintsButtonLabel.setText(this.hintsOn ? '❓ ВКЛ' : '❓ ВЫКЛ');
+    this.hintsButtonBox.setStrokeStyle(2, this.hintsOn ? 0x4ade80 : WOOD_DARK);
   }
 
   /** Попал ли клик в зону кнопки подсказок (чтобы не рубить и не рестартовать). */
@@ -730,8 +760,10 @@ export class GameScene extends Phaser.Scene {
 
   private buildOverlay(): void {
     this.overlay = this.add.container(480, 300).setVisible(false).setDepth(30);
-    const bg = this.add.rectangle(0, 0, 640, 300, 0x111827, 0.95);
-    bg.setStrokeStyle(3, 0x334155);
+    const bg = this.add.rectangle(0, 0, 640, 300, WOOD_FILL, 0.98);
+    bg.setStrokeStyle(4, WOOD_DARK);
+    const inner = this.add.rectangle(0, 0, 616, 276, 0x000000, 0);
+    inner.setStrokeStyle(2, WOOD_LIGHT);
     this.overlayTitle = this.add.text(0, -100, '', {
       fontFamily: FONT,
       fontSize: '36px',
@@ -748,24 +780,24 @@ export class GameScene extends Phaser.Scene {
     const restartHint = this.add.text(0, 110, 'Нажми R или кликни, чтобы играть снова', {
       fontFamily: FONT,
       fontSize: '19px',
-      color: COLOR_MUTED,
+      color: COLOR_CREAM,
     });
     restartHint.setOrigin(0.5, 0.5);
-    this.overlay.add([bg, this.overlayTitle, this.overlayStats, restartHint]);
+    this.overlay.add([bg, inner, this.overlayTitle, this.overlayStats, restartHint]);
   }
 
   // ---------- Рубильник режима ----------
 
-  /** Рубильник в правом верхнем углу: щиток, ручка, значки и подпись режима. */
+  /** Рубильник в правом верхнем углу: деревянный щиток, ручка, значки и подпись. */
   private buildModeSwitch(): void {
-    const plate = this.add.rectangle(0, 0, 132, 66, 0x111827, 0.92);
-    plate.setStrokeStyle(2, 0x64748b);
+    const plate = this.add.rectangle(0, 0, 132, 66, WOOD_FILL, 0.96);
+    plate.setStrokeStyle(2, WOOD_DARK);
     plate.setInteractive({ useHandCursor: true });
     plate.on('pointerdown', () => this.toggleMode());
     const title = this.add.text(0, -40, 'РЕЖИМ ИГРЫ', {
       fontFamily: FONT,
       fontSize: '13px',
-      color: COLOR_MUTED,
+      color: COLOR_CREAM,
     });
     title.setOrigin(0.5, 0.5);
     const slot = this.add.rectangle(0, 0, 84, 12, 0x334155);
@@ -780,7 +812,7 @@ export class GameScene extends Phaser.Scene {
     this.modeSwitchLabel = this.add.text(0, 46, '', {
       fontFamily: FONT,
       fontSize: '15px',
-      color: COLOR_TEXT,
+      color: COLOR_CREAM,
     });
     this.modeSwitchLabel.setOrigin(0.5, 0.5);
     const sw = this.add.container(SWITCH_X, SWITCH_Y, [
@@ -881,9 +913,10 @@ export class GameScene extends Phaser.Scene {
     if (event.repeat) return;
     // Во время оглушения рубить нельзя.
     if (this.time.now < this.stunnedUntil) return;
+    // Любая одиночная клавиша в деле (буквы, цифры, знаки).
     // Раскладка не важна: латинские двойники приводятся к кириллице пула.
+    if (event.key.length !== 1) return;
     const pressed = normalizeLetter(event.key.toUpperCase());
-    if (pressed.length !== 1 || !/[А-ЯЁ]/.test(pressed)) return;
 
     const bottom = this.segments[0];
     if (pressed === bottom.key) {
