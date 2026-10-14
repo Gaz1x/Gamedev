@@ -16,17 +16,21 @@ const PLAYER_OFFSET_X = 118;
 /** Сколько жизней у игрока. Удар ствола = −1. */
 const MAX_LIVES = 3;
 /** Сколько лесников нужно спасти для победы. */
-const FORESTERS_TO_WIN = 5;
-/** Через сколько новых сегментов гарантированно появляется ветка с лесником. */
-const FORESTER_EVERY_SEGMENTS = 8;
+const FORESTERS_TO_WIN = 30;
+/** Минимум рубок до ветки с лесником. */
+const FORESTER_MIN_GAP = 5;
+/** Максимум рубок до ветки с лесником. */
+const FORESTER_MAX_GAP = 12;
 /** Стартовый шанс ветки на новом сегменте. */
 const BRANCH_CHANCE_START = 0.32;
 /** Рост шанса ветки за каждого спасённого. */
 const BRANCH_CHANCE_STEP = 0.04;
 /** Максимальный шанс ветки. */
 const BRANCH_CHANCE_MAX = 0.55;
-/** Неуязвимость после удара, мс. */
-const HIT_COOLDOWN_MS = 1000;
+/** Оглушение после удара веткой: рубить нельзя, мс. */
+const STUN_MS = 900;
+/** Ключ рекорда времени в localStorage. */
+const BEST_TIME_KEY = 'lumberjack-best-time';
 /** Через сколько мс бездействия появляется шкала «РУБИ!». */
 const IDLE_WARN_MS = 3500;
 /** Через сколько мс бездействия сгорает жизнь. */
@@ -62,18 +66,20 @@ export class GameScene extends Phaser.Scene {
   private segmentObjs: Phaser.GameObjects.Container[] = [];
   private fallingLogs: Phaser.GameObjects.Container[] = [];
   private segmentsSinceForester = 0;
+  private foresterGap = FORESTER_MAX_GAP;
 
   private playerSide: Side = 'left';
   private player!: Phaser.GameObjects.Container;
-  private axe!: Phaser.GameObjects.Rectangle;
+  private axe!: Phaser.GameObjects.Container;
 
   private chops = 0;
   private rescued = 0;
   private lives = MAX_LIVES;
   private elapsed = 0;
   private playing = true;
-  private invulnerableUntil = 0;
+  private stunnedUntil = 0;
   private lastActionTime = 0;
+  private bestTime: number | null = null;
 
   private livesText!: Phaser.GameObjects.Text;
   private timeText!: Phaser.GameObjects.Text;
@@ -97,8 +103,10 @@ export class GameScene extends Phaser.Scene {
     this.lives = MAX_LIVES;
     this.elapsed = 0;
     this.playing = true;
-    this.invulnerableUntil = 0;
+    this.stunnedUntil = 0;
     this.lastActionTime = this.time.now;
+    this.foresterGap = this.randomForesterGap();
+    this.bestTime = this.loadBestTime();
     this.playerSide = 'left';
     this.segments = [];
     this.segmentObjs = [];
@@ -130,12 +138,9 @@ export class GameScene extends Phaser.Scene {
       this.timeText.setText(`⏱ ${this.elapsed.toFixed(1)}с`);
       this.tickIdle();
     }
-    // Мигание при неуязвимости.
-    if (this.playing && this.time.now < this.invulnerableUntil) {
-      const blink = Math.floor(this.time.now / 120) % 2 === 0;
-      this.player.setAlpha(blink ? 0.35 : 1);
-    } else if (this.playing) {
-      this.player.setAlpha(1);
+    // Оглушение после удара: игрок полупрозрачный, рубить нельзя.
+    if (this.playing) {
+      this.player.setAlpha(this.time.now < this.stunnedUntil ? 0.55 : 1);
     }
   }
 
@@ -218,11 +223,17 @@ export class GameScene extends Phaser.Scene {
 
   // ---------- Дерево ----------
 
-  /** Новый верхний сегмент. Лесник гарантированно каждые N сегментов. */
+  /** Случайный разрыв до следующего лесника: от 5 до 12 рубок. */
+  private randomForesterGap(): number {
+    return Phaser.Math.Between(FORESTER_MIN_GAP, FORESTER_MAX_GAP);
+  }
+
+  /** Новый верхний сегмент. Ветка с лесником — через случайные 5–12 сегментов. */
   private randomSegment(): Segment {
     this.segmentsSinceForester += 1;
-    if (this.segmentsSinceForester >= FORESTER_EVERY_SEGMENTS) {
+    if (this.segmentsSinceForester >= this.foresterGap) {
       this.segmentsSinceForester = 0;
+      this.foresterGap = this.randomForesterGap();
       return { branch: Math.random() < 0.5 ? 'left' : 'right', forester: true };
     }
     const chance = Math.min(
@@ -317,10 +328,12 @@ export class GameScene extends Phaser.Scene {
     this.player.add(this.add.rectangle(0, -16, 28, 16, 0x5b3a18));
     this.player.add(this.add.rectangle(0, -46, 40, 12, 0x166534));
     this.player.add(this.add.rectangle(0, -54, 30, 12, 0x15803d));
-    // Топор справа от тела.
-    this.axe = this.add.rectangle(34, -6, 10, 46, 0x92400e);
+    // Топор целиком (рукоять + головка) в одном контейнере — крутится вместе.
+    this.axe = this.add.container(0, 0);
+    this.axe.add(this.add.rectangle(34, -6, 10, 46, 0x92400e));
+    this.axe.add(this.add.rectangle(34, -26, 34, 12, 0x9ca3af));
+    this.axe.add(this.add.rectangle(34, -26, 34, 4, 0x6b7280));
     this.player.add(this.axe);
-    this.player.add(this.add.rectangle(34, -26, 34, 12, 0x9ca3af));
   }
 
   private movePlayer(): void {
@@ -377,7 +390,8 @@ export class GameScene extends Phaser.Scene {
     this.rescuedText.setText(`🧑‍🌾 ${this.rescued}/${FORESTERS_TO_WIN}`);
     const idx = this.segments.findIndex((s) => s.forester);
     const dist = idx < 0 ? '—' : `${idx}`;
-    this.progressText.setText(`рубок: ${this.chops}   •   лесник на ветке через рубок: ${dist}`);
+    const best = this.bestTime === null ? '—' : `${this.bestTime.toFixed(1)}с`;
+    this.progressText.setText(`рубок: ${this.chops}   •   лесник через: ${dist}   •   рекорд: ${best} 🏆`);
   }
 
   // ---------- Шкала бездействия ----------
@@ -489,7 +503,7 @@ export class GameScene extends Phaser.Scene {
   // ---------- Главный удар ----------
 
   private chop(side: Side): void {
-    if (!this.playing) return;
+    if (!this.playing || this.time.now < this.stunnedUntil) return;
     this.playerSide = side;
     this.movePlayer();
     this.swingAxe();
@@ -497,17 +511,18 @@ export class GameScene extends Phaser.Scene {
     this.hideIdleBar();
 
     const bottom = this.segments[0];
-    const now = this.time.now;
     let gotHit = false;
 
-    if (bottom.branch === side && now >= this.invulnerableUntil) {
-      // 🪵 Ствол ударяет: минус жизнь. Лесник с этой ветки тоже падает.
+    if (bottom.branch === side) {
+      // 🪵 Ствол ударяет: минус жизнь + оглушение (рубить нельзя).
+      // Лесник с этой ветки тоже падает.
       gotHit = true;
       this.lives -= 1;
-      this.invulnerableUntil = now + HIT_COOLDOWN_MS;
+      this.stunnedUntil = this.time.now + STUN_MS;
       this.cameras.main.shake(180, 0.012);
       this.cameras.main.flash(120, 220, 60, 60);
-      this.floatText(TREE_X, BASE_Y - 140, bottom.forester ? '−1 ❤ лесник упал!' : '−1 ❤', COLOR_BAD);
+      this.floatText(TREE_X, BASE_Y - 140, 'Оглушён!', '#fef08a');
+      this.floatText(TREE_X, BASE_Y - 100, bottom.forester ? '−1 ❤ лесник упал!' : '−1 ❤', COLOR_BAD);
       this.updateHud();
       if (this.lives <= 0) {
         this.endGame(false);
@@ -646,13 +661,38 @@ export class GameScene extends Phaser.Scene {
 
   // ---------- Финал ----------
 
+  private loadBestTime(): number | null {
+    try {
+      const raw = localStorage.getItem(BEST_TIME_KEY);
+      const value = raw === null ? NaN : Number(raw);
+      return Number.isFinite(value) && value > 0 ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private saveBestTime(): void {
+    try {
+      if (this.bestTime !== null) localStorage.setItem(BEST_TIME_KEY, String(this.bestTime));
+    } catch {
+      // Приватный режим и т.п. — рекорд просто не сохранится.
+    }
+  }
+
   private endGame(won: boolean): void {
     this.playing = false;
     this.player.setAlpha(1);
+    let recordLine = '';
+    if (won && (this.bestTime === null || this.elapsed < this.bestTime)) {
+      this.bestTime = this.elapsed;
+      this.saveBestTime();
+      recordLine = '\n🎉 Новый рекорд времени!';
+    }
+    const bestLine = this.bestTime === null ? '' : `\nРекорд: ${this.bestTime.toFixed(1)}с 🏆`;
     const title = won ? 'ЛЕС СПАСЁН! 🌲' : 'ДРОВОСЕК ПОВЕРЖЕН 🪵';
     const detail = won
-      ? `5 лесников сняты с веток за ${this.elapsed.toFixed(1)}с!\nРубок сделано: ${this.chops}\nСчёт (время): ${this.elapsed.toFixed(1)}с — чем меньше, тем лучше!`
-      : `Лесников спасено: ${this.rescued} из ${FORESTERS_TO_WIN}\nРубок сделано: ${this.chops}\nВремя: ${this.elapsed.toFixed(1)}с`;
+      ? `${FORESTERS_TO_WIN} лесников сняты с веток за ${this.elapsed.toFixed(1)}с!\nРубок сделано: ${this.chops}${recordLine}${bestLine}`
+      : `Лесников спасено: ${this.rescued} из ${FORESTERS_TO_WIN}\nРубок сделано: ${this.chops}\nВремя: ${this.elapsed.toFixed(1)}с${bestLine}`;
     this.overlayTitle.setText(title).setColor(won ? COLOR_GOOD : COLOR_BAD);
     this.overlayStats.setText(detail);
     this.overlay.setVisible(true);
