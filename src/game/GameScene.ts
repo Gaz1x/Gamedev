@@ -37,6 +37,8 @@ const IDLE_WARN_MS = 3500;
 const IDLE_LIMIT_MS = 9000;
 /** Ширина шкалы бездействия в пикселях. */
 const IDLE_BAR_WIDTH = 320;
+/** Буквы для режима букв (кириллица — по одной на клавишу). */
+const LETTER_POOL = 'АВЕКМНОРСТУХ';
 
 const FONT = 'system-ui, sans-serif';
 const COLOR_TEXT = '#f8fafc';
@@ -46,20 +48,25 @@ const COLOR_BAD = '#f87171';
 
 type Side = 'left' | 'right';
 type Branch = 'none' | Side;
+type ControlMode = 'classic' | 'letters';
 
 /** Один кусок ствола. Лесник всегда сидит на ветке (branch != 'none'). */
 interface Segment {
   branch: Branch;
   forester: boolean;
+  /** Буква для режима букв: её надо нажать, чтобы срубить этот сегмент. */
+  key: string;
 }
 
 /**
  * «Дровосек-спасатель» (тайминг).
  *
- * Игрок рубит ствол слева/справа (←/→, A/D, клик по половине экрана).
+ * Два режима (выбор до старта): классика (←/→, A/D, клик) и буквы
+ * (жать букву с нижнего бревна; неверная буква — удар).
  * Нельзя стоять под веткой на нижнем сегменте — иначе удар и −1 жизнь.
  * На некоторых ветках сидит лесник: сруби ствол до него и не попади
- * под его ветку — лесник спасён. Победа — 5 лесников, счёт — время.
+ * под его ветку — лесник спасён. Победа — 30 лесников.
+ * Счёт — время с первой удачной рубки.
  */
 export class GameScene extends Phaser.Scene {
   private segments: Segment[] = [];
@@ -77,9 +84,14 @@ export class GameScene extends Phaser.Scene {
   private lives = MAX_LIVES;
   private elapsed = 0;
   private playing = true;
+  private started = false;
+  private mode: ControlMode = 'classic';
+  private timerStarted = false;
   private stunnedUntil = 0;
   private lastActionTime = 0;
   private bestTime: number | null = null;
+  private menu!: Phaser.GameObjects.Container;
+  private menuSelectAt = 0;
 
   private livesText!: Phaser.GameObjects.Text;
   private timeText!: Phaser.GameObjects.Text;
@@ -103,6 +115,10 @@ export class GameScene extends Phaser.Scene {
     this.lives = MAX_LIVES;
     this.elapsed = 0;
     this.playing = true;
+    this.started = false;
+    this.mode = 'classic';
+    this.timerStarted = false;
+    this.menuSelectAt = 0;
     this.stunnedUntil = 0;
     this.lastActionTime = this.time.now;
     this.foresterGap = this.randomForesterGap();
@@ -120,22 +136,25 @@ export class GameScene extends Phaser.Scene {
       this.segments.push(this.randomSegment());
     }
     // Старт безопасный: внизу пусто, а лесник виден сразу near верхушки.
-    this.segments[0] = { branch: 'none', forester: false };
-    this.segments[1] = { branch: 'none', forester: false };
-    this.segments[5] = { branch: 'right', forester: true };
+    this.segments[0] = { branch: 'none', forester: false, key: this.randomLetter() };
+    this.segments[1] = { branch: 'none', forester: false, key: this.randomLetter() };
+    this.segments[5] = { branch: 'right', forester: true, key: this.randomLetter() };
     this.refreshTree();
 
     this.buildPlayer();
     this.buildHud();
     this.buildOverlay();
     this.buildIdleBar();
+    this.buildMenu();
     this.bindInput();
   }
 
   update(_time: number, delta: number): void {
-    if (this.playing) {
-      this.elapsed += delta / 1000;
-      this.timeText.setText(`⏱ ${this.elapsed.toFixed(1)}с`);
+    if (this.playing && this.started) {
+      if (this.timerStarted) {
+        this.elapsed += delta / 1000;
+        this.timeText.setText(`⏱ ${this.elapsed.toFixed(1)}с`);
+      }
       this.tickIdle();
     }
     // Оглушение после удара: игрок полупрозрачный, рубить нельзя.
@@ -223,6 +242,11 @@ export class GameScene extends Phaser.Scene {
 
   // ---------- Дерево ----------
 
+  /** Случайная буква для бревна. */
+  private randomLetter(): string {
+    return LETTER_POOL[Math.floor(Math.random() * LETTER_POOL.length)];
+  }
+
   /** Случайный разрыв до следующего лесника: от 5 до 12 рубок. */
   private randomForesterGap(): number {
     return Phaser.Math.Between(FORESTER_MIN_GAP, FORESTER_MAX_GAP);
@@ -234,16 +258,16 @@ export class GameScene extends Phaser.Scene {
     if (this.segmentsSinceForester >= this.foresterGap) {
       this.segmentsSinceForester = 0;
       this.foresterGap = this.randomForesterGap();
-      return { branch: Math.random() < 0.5 ? 'left' : 'right', forester: true };
+      return { branch: Math.random() < 0.5 ? 'left' : 'right', forester: true, key: this.randomLetter() };
     }
     const chance = Math.min(
       BRANCH_CHANCE_START + this.rescued * BRANCH_CHANCE_STEP,
       BRANCH_CHANCE_MAX,
     );
     const roll = Math.random();
-    if (roll < chance / 2) return { branch: 'left', forester: false };
-    if (roll < chance) return { branch: 'right', forester: false };
-    return { branch: 'none', forester: false };
+    if (roll < chance / 2) return { branch: 'left', forester: false, key: this.randomLetter() };
+    if (roll < chance) return { branch: 'right', forester: false, key: this.randomLetter() };
+    return { branch: 'none', forester: false, key: this.randomLetter() };
   }
 
   /** Маленькая фигурка лесника (тело, голова, каска). */
@@ -291,6 +315,19 @@ export class GameScene extends Phaser.Scene {
           sos.setOrigin(0.5, 0.5);
           c.add(sos);
         }
+      }
+      // В режиме букв на нижнем бревне показана нужная буква.
+      if (i === 0 && this.mode === 'letters' && this.started) {
+        const badge = this.add.rectangle(0, 0, 52, 52, 0x111827, 0.92);
+        badge.setStrokeStyle(3, 0xfef08a);
+        c.add(badge);
+        const letter = this.add.text(0, 0, seg.key, {
+          fontFamily: FONT,
+          fontSize: '34px',
+          color: '#fef08a',
+        });
+        letter.setOrigin(0.5, 0.5);
+        c.add(letter);
       }
       if (i === this.segments.length - 1) {
         // Крона на верхушке.
@@ -451,6 +488,83 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  // ---------- Выбор режима ----------
+
+  /** Меню до старта: два режима управления, выбираются кнопкой или клавишей 1/2. */
+  private buildMenu(): void {
+    this.menu = this.add.container(480, 300).setDepth(40);
+    const bg = this.add.rectangle(0, 0, 700, 440, 0x111827, 0.97);
+    bg.setStrokeStyle(3, 0x475569);
+    const title = this.add.text(0, -170, 'ДРОВОСЕК-СПАСАТЕЛЬ 🌲', {
+      fontFamily: FONT,
+      fontSize: '38px',
+      color: COLOR_TEXT,
+    });
+    title.setOrigin(0.5, 0.5);
+    const sub = this.add.text(0, -120, `Спаси ${FORESTERS_TO_WIN} лесников с веток!\nСчёт — время с первой удачной рубки`, {
+      fontFamily: FONT,
+      fontSize: '20px',
+      color: COLOR_MUTED,
+      align: 'center',
+    });
+    sub.setOrigin(0.5, 0.5);
+    const btnLetters = this.makeMenuButton(0, -20, '🔤  [1] РЕЖИМ БУКВ', 'Жми букву с нижнего бревна.\nВерная — безопасная рубка, неверная — удар!');
+    const btnClassic = this.makeMenuButton(0, 130, '🪓  [2] КЛАССИКА', '←/→, A/D или клик по половине экрана.\nНе стой под веткой!');
+    btnLetters.on('pointerdown', () => this.selectMode('letters'));
+    btnClassic.on('pointerdown', () => this.selectMode('classic'));
+    const bestLine = this.bestTime === null ? '' : `\nРекорд: ${this.bestTime.toFixed(1)}с 🏆`;
+    const best = this.add.text(0, 200, `Выбери режим кнопкой или клавишей${bestLine}`, {
+      fontFamily: FONT,
+      fontSize: '18px',
+      color: COLOR_MUTED,
+      align: 'center',
+    });
+    best.setOrigin(0.5, 0.5);
+    this.menu.add([bg, title, sub, btnLetters, btnClassic, best]);
+  }
+
+  /** Кнопка меню: прямоугольник + две строки текста. */
+  private makeMenuButton(x: number, y: number, head: string, desc: string): Phaser.GameObjects.Container {
+    const btn = this.add.container(x, y);
+    const box = this.add.rectangle(0, 0, 600, 120, 0x1e293b);
+    box.setStrokeStyle(2, 0x64748b);
+    box.setInteractive({ useHandCursor: true });
+    const headText = this.add.text(0, -28, head, {
+      fontFamily: FONT,
+      fontSize: '26px',
+      color: COLOR_TEXT,
+    });
+    headText.setOrigin(0.5, 0.5);
+    const descText = this.add.text(0, 26, desc, {
+      fontFamily: FONT,
+      fontSize: '17px',
+      color: COLOR_MUTED,
+      align: 'center',
+    });
+    descText.setOrigin(0.5, 0.5);
+    box.on('pointerover', () => box.setFillStyle(0x334155));
+    box.on('pointerout', () => box.setFillStyle(0x1e293b));
+    btn.add([box, headText, descText]);
+    return btn;
+  }
+
+  /** Старт игры в выбранном режиме. */
+  private selectMode(mode: ControlMode): void {
+    if (this.started) return;
+    this.mode = mode;
+    this.started = true;
+    this.menuSelectAt = this.time.now;
+    this.lastActionTime = this.time.now;
+    this.menu.setVisible(false);
+    this.hintText.setText(
+      mode === 'letters'
+        ? 'Жми букву с нижнего бревна! Верная — безопасная рубка, неверная — удар! ⌨️'
+        : '← / A — слева   |   → / D — справа   |   лесник сидит на ветке: руби и не стой под ней! 🪵',
+    );
+    this.refreshTree();
+    this.updateHud();
+  }
+
   private buildOverlay(): void {
     this.overlay = this.add.container(480, 300).setVisible(false).setDepth(30);
     const bg = this.add.rectangle(0, 0, 640, 300, 0x111827, 0.95);
@@ -482,28 +596,68 @@ export class GameScene extends Phaser.Scene {
   private bindInput(): void {
     const kb = this.input.keyboard;
     if (!kb) throw new Error('Keyboard input is unavailable.');
-    kb.on('keydown-LEFT', () => this.chop('left'));
-    kb.on('keydown-A', () => this.chop('left'));
-    kb.on('keydown-RIGHT', () => this.chop('right'));
-    kb.on('keydown-D', () => this.chop('right'));
+    // Выбор режима в меню.
+    kb.on('keydown-ONE', () => this.selectMode('letters'));
+    kb.on('keydown-TWO', () => this.selectMode('classic'));
+    // Классика: стрелки / WASD.
+    kb.on('keydown-LEFT', () => this.classicChop('left'));
+    kb.on('keydown-A', () => this.classicChop('left'));
+    kb.on('keydown-RIGHT', () => this.classicChop('right'));
+    kb.on('keydown-D', () => this.classicChop('right'));
     kb.on('keydown-R', () => {
       if (!this.playing) this.scene.restart();
     });
-    // Клик/тап: левая половина — рубить слева, правая — справа.
+    // Режим букв: любая буквенная клавиша.
+    kb.on('keydown', (event: KeyboardEvent) => this.onLetterKey(event));
+    // Клик/тап в классике: левая половина — слева, правая — справа.
     // После конца игры клик = рестарт.
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
       if (!this.playing) {
         this.scene.restart();
         return;
       }
-      this.chop(pointer.x < TREE_X ? 'left' : 'right');
+      if (!this.started) return;
+      // Клик сразу после выбора режима кнопкой — не рубка.
+      if (this.time.now - this.menuSelectAt < 250) return;
+      this.classicChop(pointer.x < TREE_X ? 'left' : 'right');
     });
+  }
+
+  /** Рубка для классического режима (в режиме букв стрелки и клики не работают). */
+  private classicChop(side: Side): void {
+    if (this.mode !== 'classic') return;
+    this.chop(side);
+  }
+
+  /** Нажатие буквы в режиме букв: верная — безопасная рубка, неверная — удар. */
+  private onLetterKey(event: KeyboardEvent): void {
+    if (!this.playing || !this.started || this.mode !== 'letters') return;
+    if (event.repeat) return;
+    const pressed = event.key.toUpperCase();
+    if (pressed.length !== 1 || !/[А-ЯЁA-Z]/.test(pressed)) return;
+
+    const bottom = this.segments[0];
+    if (pressed === bottom.key) {
+      // Верная буква: рубим с безопасной стороны.
+      const safe: Side =
+        bottom.branch === 'none' ? this.playerSide : bottom.branch === 'left' ? 'right' : 'left';
+      this.chop(safe);
+    } else {
+      // Неверная буква: встаём под ветку — будет удар.
+      const wrong: Side =
+        bottom.branch === 'none'
+          ? this.playerSide === 'left'
+            ? 'right'
+            : 'left'
+          : bottom.branch;
+      this.chop(wrong);
+    }
   }
 
   // ---------- Главный удар ----------
 
   private chop(side: Side): void {
-    if (!this.playing || this.time.now < this.stunnedUntil) return;
+    if (!this.playing || !this.started || this.time.now < this.stunnedUntil) return;
     this.playerSide = side;
     this.movePlayer();
     this.swingAxe();
@@ -528,6 +682,12 @@ export class GameScene extends Phaser.Scene {
         this.endGame(false);
         return;
       }
+    }
+
+    // Первая удачная рубка запускает таймер.
+    if (!gotHit && !this.timerStarted) {
+      this.timerStarted = true;
+      this.timeText.setText(`⏱ ${this.elapsed.toFixed(1)}с`);
     }
 
     // Срубили нижний сегмент: ствол «оседает», сверху новый.
