@@ -1,108 +1,243 @@
 import Phaser from 'phaser';
+import { DIALOGUE } from './dialogue';
 
-const PLAYER_SPEED = 260;
+/** Сколько терпения у лорда: ответы с минусом тратят его. */
+const MAX_PATIENCE = 6;
+/** Сколько заложников нужно выкупить для победы. */
+const HOSTAGES_TOTAL = 5;
+/** Сколько миллисекунд показывается ответ лорда перед следующим ходом. */
+const FEEDBACK_DELAY_MS = 1400;
+
+const TEXT_COLOR = '#f8fafc';
+const MUTED_COLOR = '#94a3b8';
+const GOOD_COLOR = '#4ade80';
+const BAD_COLOR = '#f87171';
+
+const FONT = 'system-ui, sans-serif';
 
 /**
- * Минимальная рабочая сцена курса.
+ * Игра «Переговорщик».
  *
- * Здесь намеренно почти нет "игры": квадрат двигается, круг можно собирать,
- * растёт счёт. Задача студента — превратить этот каркас в собственную игру.
+ * Игрок читает реплику лорда и выбирает ответ (мышью или клавишами 1/2/3).
+ * Хорошие ответы повышают терпение лорда и освобождают заложников,
+ * грубые тратят терпение. Цель — освободить всех, пока терпение не кончилось.
  */
 export class GameScene extends Phaser.Scene {
-  private player!: Phaser.GameObjects.Rectangle;
-  private target!: Phaser.GameObjects.Arc;
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private wasd!: Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
-  private scoreText!: Phaser.GameObjects.Text;
-  private score = 0;
+  private turnIndex = 0;
+  private patience = MAX_PATIENCE;
+  private freed = 0;
+
+  private patienceText!: Phaser.GameObjects.Text;
+  private freedText!: Phaser.GameObjects.Text;
+  private lordText!: Phaser.GameObjects.Text;
+  private feedbackText!: Phaser.GameObjects.Text;
+  private hintText!: Phaser.GameObjects.Text;
+  private choiceBoxes: Phaser.GameObjects.Rectangle[] = [];
+  private choiceLabels: Phaser.GameObjects.Text[] = [];
+  private keys!: Record<'one' | 'two' | 'three' | 'restart', Phaser.Input.Keyboard.Key>;
+  private locked = false;
+  private gameOver = false;
 
   constructor() {
     super('GameScene');
   }
 
   create(): void {
-    const { width, height } = this.scale;
+    const { width } = this.scale;
+
+    // При рестарте (R) Phaser вызывает create() на том же экземпляре сцены,
+    // поэтому состояние сбрасываем руками, а не полагаемся на инициализаторы полей.
+    this.turnIndex = 0;
+    this.patience = MAX_PATIENCE;
+    this.freed = 0;
+    this.locked = false;
+    this.gameOver = false;
+    this.choiceBoxes = [];
+    this.choiceLabels = [];
 
     this.add
-      .text(width / 2, 28, 'GAME DEV STARTER', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '28px',
-        color: '#ffffff',
+      .text(width / 2, 20, 'ПЕРЕГОВОРЩИК', {
+        fontFamily: FONT,
+        fontSize: '30px',
+        color: TEXT_COLOR,
       })
       .setOrigin(0.5, 0);
 
-    this.add
-      .text(width / 2, 68, 'Стрелки / WASD — движение. Остальное придумай сам.', {
-        fontFamily: 'system-ui, sans-serif',
-        fontSize: '18px',
-        color: '#cbd5e1',
-      })
-      .setOrigin(0.5, 0);
-
-    this.player = this.add.rectangle(width / 2, height / 2, 42, 42, 0x38bdf8);
-    this.target = this.add.circle(width * 0.72, height * 0.52, 18, 0xfacc15);
-
-    this.scoreText = this.add.text(24, height - 48, 'Score: 0', {
-      fontFamily: 'system-ui, sans-serif',
+    this.patienceText = this.add.text(24, 66, '', {
+      fontFamily: FONT,
       fontSize: '22px',
-      color: '#ffffff',
+      color: TEXT_COLOR,
     });
+    this.freedText = this.add.text(width - 24, 66, '', {
+      fontFamily: FONT,
+      fontSize: '22px',
+      color: TEXT_COLOR,
+    });
+    this.freedText.setOrigin(1, 0);
+
+    this.lordText = this.add.text(width / 2, 130, '', {
+      fontFamily: FONT,
+      fontSize: '24px',
+      color: TEXT_COLOR,
+      align: 'center',
+      wordWrap: { width: width - 120 },
+    });
+    this.lordText.setOrigin(0.5, 0);
+
+    this.buildChoices();
+
+    this.feedbackText = this.add.text(width / 2, 480, '', {
+      fontFamily: FONT,
+      fontSize: '22px',
+      color: TEXT_COLOR,
+      align: 'center',
+      wordWrap: { width: width - 120 },
+    });
+    this.feedbackText.setOrigin(0.5, 0);
+
+    this.hintText = this.add.text(width / 2, 576, 'Клик мышью или клавиши 1 / 2 / 3 — ответить', {
+      fontFamily: FONT,
+      fontSize: '18px',
+      color: MUTED_COLOR,
+    });
+    this.hintText.setOrigin(0.5, 0);
 
     if (!this.input.keyboard) {
       throw new Error('Keyboard input is unavailable.');
     }
 
-    this.cursors = this.input.keyboard.createCursorKeys();
-    this.wasd = this.input.keyboard.addKeys({
-      up: Phaser.Input.Keyboard.KeyCodes.W,
-      down: Phaser.Input.Keyboard.KeyCodes.S,
-      left: Phaser.Input.Keyboard.KeyCodes.A,
-      right: Phaser.Input.Keyboard.KeyCodes.D,
-    }) as Record<'up' | 'down' | 'left' | 'right', Phaser.Input.Keyboard.Key>;
+    this.keys = {
+      one: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ONE),
+      two: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.TWO),
+      three: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.THREE),
+      restart: this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R),
+    };
+
+    this.keys.one.on('down', () => this.choose(0));
+    this.keys.two.on('down', () => this.choose(1));
+    this.keys.three.on('down', () => this.choose(2));
+    this.keys.restart.on('down', () => {
+      if (this.gameOver) this.scene.restart();
+    });
+
+    this.showTurn();
   }
 
-  update(_time: number, delta: number): void {
-    const seconds = delta / 1000;
-    let dx = 0;
-    let dy = 0;
+  /** Создаёт три одинаковых блока вариантов ответа. */
+  private buildChoices(): void {
+    const { width } = this.scale;
+    const boxWidth = width - 120;
+    const boxHeight = 74;
+    const startY = 250;
+    const gap = 12;
 
-    if (this.cursors.left.isDown || this.wasd.left.isDown) dx -= 1;
-    if (this.cursors.right.isDown || this.wasd.right.isDown) dx += 1;
-    if (this.cursors.up.isDown || this.wasd.up.isDown) dy -= 1;
-    if (this.cursors.down.isDown || this.wasd.down.isDown) dy += 1;
+    for (let i = 0; i < 3; i += 1) {
+      const y = startY + i * (boxHeight + gap);
+      const box = this.add
+        .rectangle(width / 2, y, boxWidth, boxHeight, 0x1e293b)
+        .setStrokeStyle(2, 0x334155)
+        .setInteractive({ useHandCursor: true });
 
-    if (dx !== 0 || dy !== 0) {
-      const length = Math.hypot(dx, dy);
-      this.player.x += (dx / length) * PLAYER_SPEED * seconds;
-      this.player.y += (dy / length) * PLAYER_SPEED * seconds;
+      const label = this.add
+        .text(width / 2, y, '', {
+          fontFamily: FONT,
+          fontSize: '19px',
+          color: TEXT_COLOR,
+          align: 'center',
+          wordWrap: { width: boxWidth - 60 },
+        })
+        .setOrigin(0.5, 0.5);
+
+      box.on('pointerdown', () => this.choose(i));
+      box.on('pointerover', () => {
+        if (!this.locked && !this.gameOver) box.setFillStyle(0x334155);
+      });
+      box.on('pointerout', () => box.setFillStyle(0x1e293b));
+
+      this.choiceBoxes.push(box);
+      this.choiceLabels.push(label);
+    }
+  }
+
+  /** Показывает текущий ход диалога и обновляет счётчики. */
+  private showTurn(): void {
+    const turn = DIALOGUE[this.turnIndex];
+
+    this.locked = false;
+    this.feedbackText.setText('');
+    this.lordText.setText(turn.lord);
+    this.setChoicesVisible(true);
+
+    turn.choices.forEach((choice, i) => {
+      this.choiceLabels[i].setText(`${i + 1}. ${choice.text}`);
+    });
+
+    this.updateCounters();
+  }
+
+  /** Обрабатывает ответ игрока: применяет эффект и показывает реакцию лорда. */
+  private choose(index: number): void {
+    if (this.locked || this.gameOver) return;
+
+    const turn = DIALOGUE[this.turnIndex];
+    const choice = turn.choices[index];
+
+    this.locked = true;
+    this.setChoicesVisible(false);
+
+    this.patience = Phaser.Math.Clamp(this.patience + choice.patience, 0, MAX_PATIENCE);
+    this.freed = Phaser.Math.Clamp(this.freed + choice.freed, 0, HOSTAGES_TOTAL);
+    this.updateCounters();
+
+    const effect = choice.freed > 0 ? ` +${choice.freed} заложник(ов)` : '';
+    const mood = choice.patience >= 0 ? GOOD_COLOR : BAD_COLOR;
+    this.feedbackText.setColor(mood).setText(`${choice.reply}${effect}`);
+
+    this.time.delayedCall(FEEDBACK_DELAY_MS, () => this.advance());
+  }
+
+  /** Переход к следующему ходу или завершение игры. */
+  private advance(): void {
+    if (this.freed >= HOSTAGES_TOTAL) {
+      this.endGame(true);
+      return;
+    }
+    if (this.patience <= 0) {
+      this.endGame(false);
+      return;
     }
 
-    this.keepPlayerOnScreen();
-    this.checkTarget();
+    this.turnIndex += 1;
+    if (this.turnIndex >= DIALOGUE.length) {
+      this.endGame(false);
+      return;
+    }
+
+    this.showTurn();
   }
 
-  private keepPlayerOnScreen(): void {
-    const half = this.player.width / 2;
-    this.player.x = Phaser.Math.Clamp(this.player.x, half, this.scale.width - half);
-    this.player.y = Phaser.Math.Clamp(this.player.y, 110 + half, this.scale.height - half);
+  /** Завершает игру: победа при освобождённых заложниках, иначе поражение. */
+  private endGame(won: boolean): void {
+    this.gameOver = true;
+    this.setChoicesVisible(false);
+
+    const headline = won ? 'СДЕЛКА ЗАКЛЮЧЕНА' : 'ПЕРЕГОВОРЫ СОРВАЛИСЬ';
+    const color = won ? GOOD_COLOR : BAD_COLOR;
+
+    this.lordText.setColor(color).setText(headline);
+    this.feedbackText
+      .setColor(TEXT_COLOR)
+      .setText(`Выкуплено заложников: ${this.freed} из ${HOSTAGES_TOTAL}\nОстаток терпения лорда: ${this.patience}`);
+    this.hintText.setText('Нажми R, чтобы начать переговоры заново');
   }
 
-  private checkTarget(): void {
-    const distance = Phaser.Math.Distance.Between(
-      this.player.x,
-      this.player.y,
-      this.target.x,
-      this.target.y,
-    );
+  private setChoicesVisible(visible: boolean): void {
+    this.choiceBoxes.forEach((box) => box.setVisible(visible));
+    this.choiceLabels.forEach((label) => label.setVisible(visible));
+  }
 
-    if (distance > 42) return;
-
-    this.score += 1;
-    this.scoreText.setText(`Score: ${this.score}`);
-
-    this.target.setPosition(
-      Phaser.Math.Between(60, this.scale.width - 60),
-      Phaser.Math.Between(140, this.scale.height - 80),
-    );
+  private updateCounters(): void {
+    this.patienceText.setText(`Терпение лорда: ${this.patience} / ${MAX_PATIENCE}`);
+    this.freedText.setText(`Свобождено: ${this.freed} / ${HOSTAGES_TOTAL}`);
   }
 }
