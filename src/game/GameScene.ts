@@ -82,6 +82,17 @@ const HINTS_Y = 226;
 /** Размер клик-зоны кнопки подсказок. */
 const HINTS_ZONE_WIDTH = 120;
 const HINTS_ZONE_HEIGHT = 56;
+/** Центр оверлея паузы на экране. */
+const PAUSE_OVERLAY_X = 480;
+const PAUSE_OVERLAY_Y = 300;
+/** Локальный X-центр кнопки «Продолжить» внутри оверлея паузы. */
+const PAUSE_BUTTON_LOCAL_X = 0;
+/** Локальный Y-центр кнопки «Продолжить» внутри оверлея паузы. */
+const PAUSE_BUTTON_LOCAL_Y = 56;
+/** Ширина клик-зоны кнопки «Продолжить». */
+const PAUSE_BUTTON_WIDTH = 300;
+/** Высота клик-зоны кнопки «Продолжить». */
+const PAUSE_BUTTON_HEIGHT = 62;
 /** Ключ рекорда времени в localStorage. */
 const BEST_TIME_KEY = 'lumberjack-best-time';
 /** Через сколько мс бездействия появляется шкала «РУБИ!». */
@@ -151,6 +162,10 @@ export class GameScene extends Phaser.Scene {
   private lives = MAX_LIVES;
   private elapsed = 0;
   private playing = true;
+  /** Стоит ли сейчас пауза: таймер, оглушение и рубки заморожены. */
+  private paused = false;
+  /** this.time.now в момент постановки паузы — чтобы сдвинуть дедлайны. */
+  private pausedAt = 0;
   private mode: ControlMode = 'classic';
   private hintsOn = false;
   private timerStarted = false;
@@ -166,6 +181,7 @@ export class GameScene extends Phaser.Scene {
   private overlay!: Phaser.GameObjects.Container;
   private overlayTitle!: Phaser.GameObjects.Text;
   private overlayStats!: Phaser.GameObjects.Text;
+  private pauseOverlay!: Phaser.GameObjects.Container;
   private idleBox!: Phaser.GameObjects.Container;
   private idleFill!: Phaser.GameObjects.Rectangle;
   private idleLabel!: Phaser.GameObjects.Text;
@@ -185,6 +201,7 @@ export class GameScene extends Phaser.Scene {
     this.lives = MAX_LIVES;
     this.elapsed = 0;
     this.playing = true;
+    this.paused = false;
     this.mode = 'classic';
     this.hintsOn = false;
     this.timerStarted = false;
@@ -214,6 +231,7 @@ export class GameScene extends Phaser.Scene {
     this.buildPlayer();
     this.buildHud();
     this.buildOverlay();
+    this.buildPauseOverlay();
     this.buildIdleBar();
     this.buildModeSwitch();
     this.buildHintsButton();
@@ -221,6 +239,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number): void {
+    // Пауза: игровой цикл просто ждёт — таймер и простой не идут.
+    if (this.paused) return;
     // Таймер и полоска простоя живут только после первой рубки.
     if (this.playing && this.timerStarted) {
       this.elapsed += delta / 1000;
@@ -738,6 +758,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Переключает подсказки и обновляет кнопку. */
   private toggleHints(): void {
+    if (this.paused) return;
     this.hintsOn = !this.hintsOn;
     this.applyModeHint();
     this.updateHintsButton();
@@ -793,6 +814,88 @@ export class GameScene extends Phaser.Scene {
     });
     restartHint.setOrigin(0.5, 0.5);
     this.overlay.add([bg, inner, this.overlayTitle, this.overlayStats, restartHint]);
+  }
+
+  // ---------- Пауза ----------
+
+  /**
+   * Оверлей паузы: затемнение, надпись «ПАУЗА» и кнопка «Продолжить».
+   * Виден только пока paused === true; клик по кнопке обрабатывается
+   * в bindInput(), чтобы игра продолжилась ровно с момента остановки.
+   */
+  private buildPauseOverlay(): void {
+    const dim = this.add.rectangle(0, 0, 960, 640, 0x000000, 0.55);
+    const title = this.add.text(0, -76, 'ПАУЗА', {
+      fontFamily: FONT,
+      fontSize: '52px',
+      fontStyle: 'bold',
+      color: COLOR_TEXT,
+    });
+    title.setOrigin(0.5, 0.5);
+    const hint = this.add.text(0, -22, 'Таймер остановлен — жми ESC или кнопку', {
+      fontFamily: FONT,
+      fontSize: '18px',
+      color: COLOR_MUTED,
+    });
+    hint.setOrigin(0.5, 0.5);
+    const buttonBox = this.add.rectangle(
+      PAUSE_BUTTON_LOCAL_X,
+      PAUSE_BUTTON_LOCAL_Y,
+      PAUSE_BUTTON_WIDTH,
+      PAUSE_BUTTON_HEIGHT,
+      0x15803d,
+    );
+    buttonBox.setStrokeStyle(3, WOOD_DARK);
+    // Курсор «рука»; сам клик ловит bindInput, чтобы не рубить после резюма.
+    buttonBox.setInteractive({ useHandCursor: true });
+    const buttonLabel = this.add.text(PAUSE_BUTTON_LOCAL_X, PAUSE_BUTTON_LOCAL_Y, '▶ Продолжить', {
+      fontFamily: FONT,
+      fontSize: '24px',
+      color: COLOR_CREAM,
+    });
+    buttonLabel.setOrigin(0.5, 0.5);
+    this.pauseOverlay = this.add
+      .container(PAUSE_OVERLAY_X, PAUSE_OVERLAY_Y, [dim, title, hint, buttonBox, buttonLabel])
+      .setVisible(false)
+      .setDepth(40);
+  }
+
+  /**
+   * ESC: ставит/снимает паузу. До первой рубки пауза недоступна.
+   */
+  private togglePause(): void {
+    if (!this.playing) return;
+    if (this.paused) {
+      this.resumeGame();
+      return;
+    }
+    if (!this.timerStarted) {
+      this.floatText(TREE_X, BASE_Y - 140, 'Пауза — после первой рубки 🔨', '#fbbf24');
+      return;
+    }
+    this.paused = true;
+    this.pausedAt = this.time.now;
+    this.hideIdleBar();
+    this.tweens.pauseAll();
+    this.pauseOverlay.setVisible(true);
+  }
+
+  /** Снимает паузу: твины продолжаются, оглушение и простой «продлеваются». */
+  private resumeGame(): void {
+    const pausedFor = this.time.now - this.pausedAt;
+    this.paused = false;
+    this.pauseOverlay.setVisible(false);
+    this.tweens.resumeAll();
+    this.stunnedUntil += pausedFor;
+    this.lastActionTime += pausedFor;
+  }
+
+  /** Попал ли клик в кнопку «Продолжить» на оверлее паузы. */
+  private isOverPauseButton(x: number, y: number): boolean {
+    return (
+      Math.abs(x - (PAUSE_OVERLAY_X + PAUSE_BUTTON_LOCAL_X)) <= PAUSE_BUTTON_WIDTH / 2 &&
+      Math.abs(y - (PAUSE_OVERLAY_Y + PAUSE_BUTTON_LOCAL_Y)) <= PAUSE_BUTTON_HEIGHT / 2
+    );
   }
 
   // ---------- Рубильник режима ----------
@@ -857,7 +960,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Клик по рубильнику: переключает режим, но только до первой рубки. */
   private toggleMode(): void {
-    if (!this.playing) return;
+    if (!this.playing || this.paused) return;
     if (this.timerStarted) {
       this.floatText(SWITCH_X, SWITCH_Y + 70, '🔒 Закрыт после первой рубки', '#fbbf24');
       return;
@@ -889,11 +992,18 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-R', () => {
       if (!this.playing) this.scene.restart();
     });
+    // Пауза: ESC ставит и снимает паузу.
+    kb.on('keydown-ESC', () => this.togglePause());
     // Режим букв: любая буквенная клавиша.
     kb.on('keydown', (event: KeyboardEvent) => this.onLetterKey(event));
     // Клик/тап в классике: левая половина — слева, правая — справа.
     // После конца игры клик = рестарт.
     this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+      // На паузе клик снимает паузу только по кнопке «Продолжить», рубить нельзя.
+      if (this.paused) {
+        if (this.isOverPauseButton(pointer.x, pointer.y)) this.resumeGame();
+        return;
+      }
       // Клики по рубильнику и кнопке подсказок — не рубка и не рестарт.
       if (this.isOverModeSwitch(pointer.x, pointer.y)) return;
       if (this.isOverHintsButton(pointer.x, pointer.y)) return;
@@ -942,7 +1052,7 @@ export class GameScene extends Phaser.Scene {
   // ---------- Главный удар ----------
 
   private chop(side: Side): void {
-    if (!this.playing || this.time.now < this.stunnedUntil) return;
+    if (this.paused || !this.playing || this.time.now < this.stunnedUntil) return;
     this.playerSide = side;
     this.movePlayer();
     this.swingAxe();
