@@ -126,8 +126,9 @@ interface Segment {
  * «Дровосек-спасатель» (тайминг).
  *
  * Два режима (переключаются рубильником в правом верхнем углу до первой рубки):
- * классика (←/→, A/D, клик) и буквы (жать букву с нижнего бревна;
- * раскладка не важна, неверная буква — рубка на месте и возможный удар).
+ * классика (←/→, A/D, клик) и буквы (жать символ с нижнего бревна;
+ * раскладка не важна, неверная буква — шаг под ветку и удар).
+ * В режиме букв ветка есть на каждом бревне.
  * Нельзя стоять под веткой на нижнем сегменте — иначе удар и −1 жизнь.
  * На некоторых ветках сидит лесник: сруби ствол до него и не попади
  * под его ветку — лесник спасён. Победа — 30 лесников.
@@ -374,6 +375,14 @@ export class GameScene extends Phaser.Scene {
       this.segmentsSinceForester = 0;
       this.foresterGap = this.randomForesterGap();
       return { branch: Math.random() < 0.5 ? 'left' : 'right', forester: true, key: this.randomLetter() };
+    }
+    // В режиме букв каждое бревно с веткой: ошибка всегда стоит жизни.
+    if (this.mode === 'letters') {
+      return {
+        branch: Math.random() < 0.5 ? 'left' : 'right',
+        forester: false,
+        key: this.randomLetter(),
+      };
     }
     const chance = Math.min(
       BRANCH_CHANCE_START + this.rescued * BRANCH_CHANCE_STEP,
@@ -905,8 +914,8 @@ export class GameScene extends Phaser.Scene {
   /**
    * Нажатие буквы в режиме букв.
    * Верная — безопасная рубка (всегда со стороны, противоположной ветке).
-   * Неверная — рубка на месте: дровосек не двигается, топор машет,
-   * и если стоит под веткой — получает удар.
+   * Неверная — шаг под ветку: удар и −1 жизнь (в режиме букв ветка
+   * есть на каждом бревне, так что ошибка всегда стоит жизни).
    */
   private onLetterKey(event: KeyboardEvent): void {
     if (!this.playing || this.mode !== 'letters') return;
@@ -925,8 +934,8 @@ export class GameScene extends Phaser.Scene {
         bottom.branch === 'none' ? this.playerSide : bottom.branch === 'left' ? 'right' : 'left';
       this.chop(safe);
     } else {
-      // Неверная буква: рубка на месте — под веткой будет удар.
-      this.chop(this.playerSide);
+      // Неверная буква: встаём под ветку — удар гарантирован.
+      this.chop(bottom.branch === 'none' ? this.playerSide : bottom.branch);
     }
   }
 
