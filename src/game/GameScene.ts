@@ -21,12 +21,18 @@ const FORESTERS_TO_WIN = 30;
 const FORESTER_MIN_GAP = 5;
 /** Максимум рубок до ветки с лесником. */
 const FORESTER_MAX_GAP = 12;
-/** Стартовый шанс ветки на новом сегменте. */
-const BRANCH_CHANCE_START = 0.32;
+/** Стартовый шанс ветки на новом сегменте (классика, фаза 1). */
+const BRANCH_CHANCE_START = 0.2;
 /** Рост шанса ветки за каждого спасённого. */
 const BRANCH_CHANCE_STEP = 0.04;
+/** Дополнительный шанс ветки за каждую новую фазу сложности. */
+const PHASE_BRANCH_CHANCE_STEP = 0.18;
 /** Максимальный шанс ветки. */
-const BRANCH_CHANCE_MAX = 0.55;
+const BRANCH_CHANCE_MAX = 0.9;
+/** Сколько секунд идёт одна фаза сложности (классика): веток становится больше. */
+const PHASE_SECONDS = 60;
+/** Сколько мс надо зажать физическую клавишу R, чтобы перезапустить игру. */
+const RESTART_HOLD_MS = 900;
 /** Оглушение после удара веткой: рубить нельзя, мс. */
 const STUN_MS = 900;
 /** Латинские двойники букв пула: раскладка клавиатуры не важна (С ≡ C). */
@@ -169,6 +175,10 @@ export class GameScene extends Phaser.Scene {
   private mode: ControlMode = 'classic';
   private hintsOn = false;
   private timerStarted = false;
+  /** Текущая фаза сложности в классике: 1 + сколько минут прошло. */
+  private phase = 1;
+  /** this.time.now в момент нажатия R для перезапуска: 0 — клавиша не зажата. */
+  private restartHoldStart = 0;
   private stunnedUntil = 0;
   private lastActionTime = 0;
   private bestTime: number | null = null;
@@ -205,6 +215,8 @@ export class GameScene extends Phaser.Scene {
     this.mode = 'classic';
     this.hintsOn = false;
     this.timerStarted = false;
+    this.phase = 1;
+    this.restartHoldStart = 0;
     this.stunnedUntil = 0;
     this.lastActionTime = this.time.now;
     this.foresterGap = this.randomForesterGap();
@@ -239,6 +251,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_time: number, delta: number): void {
+    // Перезапуск по зажатой R доступен всегда, даже на паузе.
+    if (this.checkRestartHold()) return;
     // Пауза: игровой цикл просто ждёт — таймер и простой не идут.
     if (this.paused) return;
     // Таймер и полоска простоя живут только после первой рубки.
@@ -246,11 +260,48 @@ export class GameScene extends Phaser.Scene {
       this.elapsed += delta / 1000;
       this.timeText.setText(`⏱ ${this.elapsed.toFixed(1)}с`);
       this.tickIdle();
+      // Фазы сложности действуют только в классике (в буквах ветка на каждом бревне).
+      if (this.mode === 'classic') this.checkPhase();
     }
     // Оглушение после удара: игрок полупрозрачный, рубить нельзя.
     if (this.playing) {
       this.player.setAlpha(this.time.now < this.stunnedUntil ? 0.55 : 1);
     }
+  }
+
+  // ---------- Фазы сложности ----------
+
+  /**
+   * Классика становится жёстче со временем: каждые PHASE_SECONDS секунд —
+   * новая фаза, шанс ветки растёт на PHASE_BRANCH_CHANCE_STEP.
+   */
+  private checkPhase(): void {
+    const phase = Math.floor(this.elapsed / PHASE_SECONDS) + 1;
+    if (phase <= this.phase) return;
+    this.phase = phase;
+    this.announcePhase();
+  }
+
+  /** Уведомление о новой фазе: вспышка, тряска и всплывающая надпись. */
+  private announcePhase(): void {
+    this.cameras.main.flash(220, 251, 191, 36);
+    this.cameras.main.shake(220, 0.008);
+    this.floatText(TREE_X, 220, `ФАЗА ${this.phase}: веток больше! 🌿`, '#fbbf24');
+    this.updateHud();
+  }
+
+  // ---------- Перезапуск ----------
+
+  /**
+   * Зажатие физической клавиши R дольше RESTART_HOLD_MS — перезапуск игры.
+   * Зажатие нужно, чтобы не конфликтовать с режимом букв (R = буква К).
+   * @returns true, если игра перезапущена в этом кадре.
+   */
+  private checkRestartHold(): boolean {
+    if (this.restartHoldStart === 0) return false;
+    if (this.time.now - this.restartHoldStart < RESTART_HOLD_MS) return false;
+    this.scene.restart();
+    return true;
   }
 
   // ---------- Текстуры (процедурные, без внешних файлов) ----------
@@ -405,7 +456,9 @@ export class GameScene extends Phaser.Scene {
       };
     }
     const chance = Math.min(
-      BRANCH_CHANCE_START + this.rescued * BRANCH_CHANCE_STEP,
+      BRANCH_CHANCE_START +
+        this.rescued * BRANCH_CHANCE_STEP +
+        (this.phase - 1) * PHASE_BRANCH_CHANCE_STEP,
       BRANCH_CHANCE_MAX,
     );
     const roll = Math.random();
@@ -673,7 +726,11 @@ export class GameScene extends Phaser.Scene {
     const idx = this.segments.findIndex((s) => s.forester);
     const dist = idx < 0 ? '—' : `${idx}`;
     const best = this.bestTime === null ? '—' : `${this.bestTime.toFixed(1)}с`;
-    this.progressText.setText(`рубок: ${this.chops}   •   лесник через: ${dist}   •   рекорд: ${best} 🏆`);
+    // Фаза действует только в классике — в HUD показываем её там.
+    const phasePart = this.mode === 'classic' ? `   •   фаза: ${this.phase}` : '';
+    this.progressText.setText(
+      `рубок: ${this.chops}   •   лесник через: ${dist}${phasePart}   •   рекорд: ${best} 🏆`,
+    );
   }
 
   // ---------- Шкала бездействия ----------
@@ -807,7 +864,7 @@ export class GameScene extends Phaser.Scene {
       align: 'center',
     });
     this.overlayStats.setOrigin(0.5, 0.5);
-    const restartHint = this.add.text(0, 110, 'Нажми R или кликни, чтобы играть снова', {
+    const restartHint = this.add.text(0, 110, 'Зажми R или кликни, чтобы играть снова', {
       fontFamily: FONT,
       fontSize: '19px',
       color: COLOR_CREAM,
@@ -968,6 +1025,7 @@ export class GameScene extends Phaser.Scene {
     this.mode = this.mode === 'classic' ? 'letters' : 'classic';
     this.updateModeSwitch(true);
     this.applyModeHint();
+    this.updateHud();
     this.refreshTree();
   }
 
@@ -989,8 +1047,14 @@ export class GameScene extends Phaser.Scene {
     kb.on('keydown-A', () => this.classicChop('left'));
     kb.on('keydown-RIGHT', () => this.classicChop('right'));
     kb.on('keydown-D', () => this.classicChop('right'));
-    kb.on('keydown-R', () => {
-      if (!this.playing) this.scene.restart();
+    // Перезапуск: зажать R (в режиме букв R = буква К, поэтому только зажатие).
+    kb.on('keydown-R', (event: KeyboardEvent) => {
+      if (event.repeat) return;
+      this.restartHoldStart = this.time.now;
+      this.floatText(TREE_X, 220, `Зажми R ещё ${(RESTART_HOLD_MS / 1000).toFixed(1)}с — заново 🔄`, COLOR_MUTED);
+    });
+    kb.on('keyup-R', () => {
+      this.restartHoldStart = 0;
     });
     // Пауза: ESC ставит и снимает паузу.
     kb.on('keydown-ESC', () => this.togglePause());
